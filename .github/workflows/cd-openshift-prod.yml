@@ -1,0 +1,57 @@
+name: CD - Despliegue a Produccion en OpenShift
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  desplegar-openshift:
+    name: Publicar Imagen y Desplegar en OpenShift
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar codigo de produccion
+        uses: actions/checkout@v4
+
+      - name: Convertir nombre de repositorio a minusculas
+        id: repo
+        run: echo "owner_lc=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
+      - name: Iniciar sesion en GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Construir y publicar imagen Docker
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/cotizador-service
+          push: true
+          tags: ghcr.io/${{ steps.repo.outputs.owner_lc }}/cotizador-service:latest
+
+      - name: Instalar CLI de OpenShift (oc)
+        uses: redhat-actions/openshift-tools-installer@v1
+        with:
+          oc: "4.14"
+
+      - name: Conectar a Red Hat OpenShift y desplegar
+        env:
+          OPENSHIFT_SERVER: ${{ secrets.OPENSHIFT_SERVER }}
+          OPENSHIFT_TOKEN: ${{ secrets.OPENSHIFT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          oc login --token="$OPENSHIFT_TOKEN" --server="$OPENSHIFT_SERVER" --insecure-skip-tls-verify=true
+          oc create secret docker-registry ghcr-secret \
+            --docker-server=ghcr.io \
+            --docker-username="${{ github.actor }}" \
+            --docker-password="$GITHUB_TOKEN" \
+            --dry-run=client -o yaml | oc apply -f -
+          sed -i "s|IMAGE_PLACEHOLDER|ghcr.io/${{ steps.repo.outputs.owner_lc }}/cotizador-service:latest|g" openshift/openshift-cotizador.yaml
+          oc apply -f openshift/openshift-cotizador.yaml
+          oc rollout status deployment/cotizador-service --timeout=120s

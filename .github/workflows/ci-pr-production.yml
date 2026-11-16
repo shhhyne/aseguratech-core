@@ -1,0 +1,24 @@
+name: CI - Validacion de Pull Request a Produccion
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  validar-codigo-y-yaml:
+    name: Build Docker y Validacion YAML
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar codigo del Pull Request
+        uses: actions/checkout@v4
+
+      - name: Validar sintaxis de manifiestos YAML
+        run: pip install pyyaml && python3 -c "import yaml, glob; [list(yaml.safe_load_all(open(f))) for f in glob.glob('openshift/*.yaml')]; print('YAML valido')"
+
+      - name: Probar construccion de imagen Docker
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/cotizador-service
+          push: false
+          tags: cotizador-service:pr-test
