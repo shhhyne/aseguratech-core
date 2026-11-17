@@ -1,4 +1,4 @@
-name: CD - Despliegue a Produccion en OpenShift
+name: Pipeline DevOps - Entrega Continua a OpenShift
 
 on:
   push:
@@ -10,42 +10,89 @@ permissions:
   packages: write
 
 jobs:
-  desplegar-openshift:
-    name: Publicar Imagen y Desplegar con Helm en OpenShift
+  etapa-1-calidad-y-lint:
+    name: 1. Lint Helm y Validacion YAML
     runs-on: ubuntu-latest
     steps:
-      - name: Descargar codigo de produccion
+      - name: Descargar codigo fuente
         uses: actions/checkout@v4
 
-      - name: Convertir nombre de repositorio a minusculas
+      - name: Instalar Helm
+        uses: azure/setup-helm@v4
+
+      - name: Validar Chart y renderizado de plantillas
+        run: |
+          helm lint ./helm/aseguratech-chart
+          helm template aseguratech-release ./helm/aseguratech-chart > /dev/null
+
+  etapa-2-build-y-registro:
+    name: 2. Build y Push Imagen Docker
+    needs: etapa-1-calidad-y-lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar codigo fuente
+        uses: actions/checkout@v4
+
+      - name: Convertir usuario a minusculas
         id: repo
         run: echo "owner_lc=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
-      - name: Iniciar sesion en GitHub Container Registry
+      - name: Autenticar en GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Construir y publicar imagen Docker
+      - name: Construir y publicar imagen
         uses: docker/build-push-action@v5
         with:
           context: ./services/cotizador-service
           push: true
-          tags: ghcr.io/${{ steps.repo.outputs.owner_lc }}/cotizador-service:latest
+          tags: |
+            ghcr.io/${{ steps.repo.outputs.owner_lc }}/cotizador-service:latest
+            ghcr.io/${{ steps.repo.outputs.owner_lc }}/cotizador-service:${{ github.sha }}
 
-      - name: Instalar CLI de OpenShift (oc)
+  etapa-3-despliegue-helm:
+    name: 3. Despliegue con Helm en OpenShift
+    needs: etapa-2-build-y-registro
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar codigo fuente
+        uses: actions/checkout@v4
+
+      - name: Instalar CLI de OpenShift (oc) y Helm
         uses: redhat-actions/openshift-tools-installer@v1
         with:
           oc: "4.14"
 
-      - name: Conectar a Red Hat OpenShift y desplegar con Helm
+      - name: Ejecutar Helm Upgrade en shyne-s-dev
         env:
           OPENSHIFT_SERVER: ${{ secrets.OPENSHIFT_SERVER }}
           OPENSHIFT_TOKEN: ${{ secrets.OPENSHIFT_TOKEN }}
         run: |
           oc login --token="$OPENSHIFT_TOKEN" --server="$OPENSHIFT_SERVER" --insecure-skip-tls-verify=true
           oc project shyne-s-dev
-          helm upgrade --install aseguratech-release ./helm/aseguratech-chart --reuse-values
+          helm upgrade --install aseguratech-release ./helm/aseguratech-chart
           oc rollout status deployment/cotizador-service --timeout=120s
+
+  etapa-4-smoke-test:
+    name: 4. Verificacion Post-Despliegue (/health)
+    needs: etapa-3-despliegue-helm
+    runs-on: ubuntu-latest
+    steps:
+      - name: Instalar CLI de OpenShift (oc)
+        uses: redhat-actions/openshift-tools-installer@v1
+        with:
+          oc: "4.14"
+
+      - name: Comprobar salud del microservicio en vivo
+        env:
+          OPENSHIFT_SERVER: ${{ secrets.OPENSHIFT_SERVER }}
+          OPENSHIFT_TOKEN: ${{ secrets.OPENSHIFT_TOKEN }}
+        run: |
+          oc login --token="$OPENSHIFT_TOKEN" --server="$OPENSHIFT_SERVER" --insecure-skip-tls-verify=true
+          oc project shyne-s-dev
+          POD=$(oc get pods -l app=cotizador-service -o jsonpath='{.items[0].metadata.name}')
+          oc exec "$POD" -- python3 -c "import urllib.request; resp = urllib.request.urlopen('http://localhost:8081/health').read().decode(); print('Health check:', resp); assert resp == 'OK'"
+          oc get pods,hpa
