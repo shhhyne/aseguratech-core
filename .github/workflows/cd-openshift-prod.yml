@@ -56,3 +56,4 @@ jobs:
           sed -i "s|IMAGE_PLACEHOLDER|ghcr.io/${{ steps.repo.outputs.owner_lc }}/cotizador-service:latest|g" openshift/openshift-cotizador.yaml
           oc apply -f openshift/openshift-cotizador.yaml
           oc rollout status deployment/cotizador-service --timeout=120s
+# deploy lunes, 16 de noviembre de 2026, 22:44:35 CST
