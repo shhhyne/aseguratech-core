@@ -6,7 +6,9 @@ metadata:
     app: cotizador-service
     chart: {{ .Chart.Name }}-{{ .Chart.Version }}
 spec:
+  {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
+  {{- end }}
   selector:
     matchLabels:
       app: cotizador-service
@@ -15,8 +17,6 @@ spec:
       labels:
         app: cotizador-service
     spec:
-      imagePullSecrets:
-        {{- toYaml .Values.imagePullSecrets | nindent 8 }}
       containers:
         - name: cotizador
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
